@@ -410,7 +410,7 @@
                "lets goo",
                CYAN, 2);
  
-     printf("Message displayed!\n");
+     printf("Message displyed!\n");
  
      while (true) {
          sleep_ms(1000);
