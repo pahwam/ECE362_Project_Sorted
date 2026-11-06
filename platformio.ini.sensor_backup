@@ -1,0 +1,17 @@
+; QualityGate 2.1 - Purdue ECE 362 Proton (RP2350B)
+; Based on the official Purdue Proton Lab 0 PlatformIO configuration.
+; Requires the VS Code PlatformIO IDE extension.
+
+[env:proton]
+build_src_filter =
+    -<*>
+    +<color_sensor_working.c>
+platform = https://github.com/norandomtechie/platform-raspberrypi.git#feature/proton-picosdk-support
+board = proton
+framework = picosdk
+
+debug_tool = picoprobe
+upload_protocol = picoprobe
+
+build_src_flags = -O0
+monitor_speed = 115200
