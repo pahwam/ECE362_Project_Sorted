@@ -1,419 +1,140 @@
-
 /*
- * QualityGate 2.1
- * MCUFRIEND SPFD5408 TFT Display
- * Purdue Proton RP2350
+ * QualityGate 2.1 | Purdue Proton RP2350
+ * All-in-one LCD + two-SG90 servo integration test.
  *
- * Full 5x7 ASCII font:
- * Uppercase, lowercase, numbers, punctuation
+ * LCD pins: GP6-13, GP14, GP15, GP18, GP19, GP20
+ * Trapdoor servo: GP16  |  Chute servo: GP17
+ *
+ * Servo power: suitable external 5-6V supply, common GND with Proton.
+ * The L298N is ONLY a power distribution point; NOT a servo driver.
+ *
+ * TEST MODE: automatic movements; no color sensor reads yet.
+ * Remove horns / disconnect mechanisms until angles are calibrated.
  */
 
  #include <stdio.h>
- #include <stdint.h>
  #include "pico/stdlib.h"
+ #include "display.h"
+ #include "servo1.h"
+ #include "servo2.h"
  
- // ================= GPIO =================
+ // Change these angles once the mechanism has been calibrated.
+ #define TRAP_CLOSED  45
+ #define TRAP_OPEN   115
+ #define CHUTE_HOME  90
  
- #define LCD_RS   14
- #define LCD_WR   15
- #define LCD_CS   18
- #define LCD_RST  19
- #define LCD_RD   20
+ #define BIN_RED      30
+ #define BIN_GREEN    70
+ #define BIN_BLUE    110
+ #define BIN_YELLOW  150
  
- #define WIDTH    240
- #define HEIGHT   320
+ // Timing in milliseconds
+ #define CHUTE_SETTLE_MS  800
+ #define TRAP_DROP_MS     900
+ #define TRAP_CLOSE_MS    600
  
- // Change to 0 to test opposite orientation
- #define FLIP_180 0
- 
- // ================= COLORS =================
- 
- #define BLACK   0x0000
- #define WHITE   0xFFFF
- #define GREEN   0x07E0
- #define RED     0xF800
- #define BLUE    0x001F
- #define YELLOW  0xFFE0
- #define CYAN    0x07FF
- 
- // ================= LCD WRITING =================
- 
- void write8(uint8_t value) {
-     gpio_put_masked(0xFFu << 6,
-                     (uint32_t)value << 6);
- 
-     sleep_us(5);
-     gpio_put(LCD_WR, 0);
-     sleep_us(5);
-     gpio_put(LCD_WR, 1);
-     sleep_us(5);
+ // Show live status beneath the original greeting, without redrawing it.
+ static void show_status(const char *phase, const char *detail,
+                         uint16_t accent) {
+     lcd_rect(0, 235, WIDTH, HEIGHT - 235, BLACK);
+     draw_text(6, 242, "QUALITYGATE 2.1", WHITE, 1);
+     draw_text(6, 262, phase, accent, 1);
+     draw_text(6, 282, detail, WHITE, 1);
  }
  
- void write16(uint16_t value) {
-     write8(value >> 8);
-     write8(value & 0xFF);
+ // Verify GP16 works on its own while GP17 remains at its home angle.
+ static void test_trapdoor(void) {
+     show_status("TEST: GP16", "TRAP -> CLOSED", CYAN);
+     servo1_write(TRAP_CLOSED);
+     sleep_ms(1000);
+ 
+     show_status("TEST: GP16", "TRAP -> OPEN", YELLOW);
+     servo1_write(TRAP_OPEN);
+     sleep_ms(1000);
+ 
+     show_status("TEST: GP16", "TRAP -> CLOSED", CYAN);
+     servo1_write(TRAP_CLOSED);
+     sleep_ms(1000);
  }
  
- void lcd_reg(uint16_t reg, uint16_t value) {
-     gpio_put(LCD_CS, 0);
+ // Verify GP17 works on its own while GP16 stays closed.
+ static void test_chute(void) {
+     show_status("TEST: GP17", "CHUTE -> 60 DEG", CYAN);
+     servo2_write(60);
+     sleep_ms(1000);
  
-     gpio_put(LCD_RS, 0);
-     write16(reg);
+     show_status("TEST: GP17", "CHUTE -> 120 DEG", YELLOW);
+     servo2_write(120);
+     sleep_ms(1000);
  
-     gpio_put(LCD_RS, 1);
-     write16(value);
- 
-     gpio_put(LCD_CS, 1);
+     show_status("TEST: GP17", "CHUTE -> HOME", CYAN);
+     servo2_write(CHUTE_HOME);
+     sleep_ms(1000);
  }
  
- // ================= GPIO INITIALIZATION =================
+ // Demonstrate one object moving through the trapdoor and sorting chute.
+ // Chute goes to its destination BEFORE trapdoor opens.
+ static void test_sort(const char *color, int chute_angle,
+                       uint16_t lcd_color) {
+     char status[32];
+     snprintf(status, sizeof(status), "BIN: %s", color);
  
- void lcd_gpio_init(void) {
-     for (int p = 6; p <= 13; p++) {
-         gpio_init(p);
-         gpio_set_dir(p, GPIO_OUT);
-     }
+     servo1_write(TRAP_CLOSED);
+     show_status("TRAP CLOSED", status, lcd_color);
+     sleep_ms(300);
  
-     const int pins[] = {
-         LCD_RS, LCD_WR, LCD_CS,
-         LCD_RST, LCD_RD
-     };
+     servo2_write(chute_angle);
+     show_status("CHUTE POSITION", status, lcd_color);
+     sleep_ms(CHUTE_SETTLE_MS);
  
-     for (int i = 0; i < 5; i++) {
-         gpio_init(pins[i]);
-         gpio_put(pins[i], 1);
-         gpio_set_dir(pins[i], GPIO_OUT);
-     }
+     servo1_write(TRAP_OPEN);
+     show_status("TRAP OPEN", status, lcd_color);
+     sleep_ms(TRAP_DROP_MS);
  
-     sleep_ms(50);
+     servo1_write(TRAP_CLOSED);
+     show_status("TRAP CLOSED", status, lcd_color);
+     sleep_ms(TRAP_CLOSE_MS);
  
-     gpio_put(LCD_RST, 0);
-     sleep_ms(100);
-     gpio_put(LCD_RST, 1);
-     sleep_ms(150);
+     servo2_write(CHUTE_HOME);
+     show_status("CHUTE HOME", status, lcd_color);
+     sleep_ms(CHUTE_SETTLE_MS);
  }
- 
- // ================= ROTATION =================
- 
- void lcd_rotation(void) {
- #if FLIP_180
-     lcd_reg(0x0001, 0x0000);
-     lcd_reg(0x0060, 0xA700);
- #else
-     lcd_reg(0x0001, 0x0100);
-     lcd_reg(0x0060, 0x2700);
- #endif
-     lcd_reg(0x0003, 0x1030);
- }
- 
- // ================= SPFD5408 INIT =================
- 
- void lcd_init(void) {
-     lcd_reg(0x00E5, 0x8000);
-     lcd_reg(0x0000, 0x0001);
-     lcd_reg(0x0001, 0x0100);
-     lcd_reg(0x0002, 0x0700);
-     lcd_reg(0x0003, 0x1030);
-     lcd_reg(0x0004, 0x0000);
- 
-     lcd_reg(0x0008, 0x0202);
-     lcd_reg(0x0009, 0x0000);
-     lcd_reg(0x000A, 0x0000);
-     lcd_reg(0x000C, 0x0000);
-     lcd_reg(0x000D, 0x0000);
-     lcd_reg(0x000F, 0x0000);
- 
-     // Power initialization
-     lcd_reg(0x0010, 0x0000);
-     lcd_reg(0x0011, 0x0007);
-     lcd_reg(0x0012, 0x0000);
-     lcd_reg(0x0013, 0x0000);
-     sleep_ms(50);
- 
-     lcd_reg(0x0010, 0x17B0);
-     lcd_reg(0x0011, 0x0007);
-     sleep_ms(10);
- 
-     lcd_reg(0x0012, 0x013A);
-     sleep_ms(10);
- 
-     lcd_reg(0x0013, 0x1A00);
-     lcd_reg(0x0029, 0x000C);
-     sleep_ms(10);
- 
-     // Gamma
-     lcd_reg(0x0030, 0x0000);
-     lcd_reg(0x0031, 0x0505);
-     lcd_reg(0x0032, 0x0004);
-     lcd_reg(0x0035, 0x0006);
-     lcd_reg(0x0036, 0x0707);
-     lcd_reg(0x0037, 0x0105);
-     lcd_reg(0x0038, 0x0002);
-     lcd_reg(0x0039, 0x0707);
-     lcd_reg(0x003C, 0x0704);
-     lcd_reg(0x003D, 0x0807);
- 
-     // Display area
-     lcd_reg(0x0050, 0);
-     lcd_reg(0x0051, WIDTH - 1);
-     lcd_reg(0x0052, 0);
-     lcd_reg(0x0053, HEIGHT - 1);
- 
-     lcd_reg(0x0060, 0xA700);
-     lcd_reg(0x0061, 0x0001);
-     lcd_reg(0x006A, 0x0000);
- 
-     // Panel controls
-     lcd_reg(0x0090, 0x0010);
-     lcd_reg(0x0092, 0x0000);
-     lcd_reg(0x0093, 0x0003);
-     lcd_reg(0x0095, 0x0110);
-     lcd_reg(0x0097, 0x0000);
-     lcd_reg(0x0098, 0x0000);
- 
-     // Display ON
-     lcd_reg(0x0007, 0x0173);
-     sleep_ms(100);
- 
-     lcd_rotation();
- }
- 
- // ================= DRAWING =================
- 
- // Fill rectangle
- void lcd_rect(int x, int y, int w, int h,
-               uint16_t color) {
- 
-     if (w <= 0 || h <= 0 ||
-         x < 0 || y < 0 ||
-         x + w > WIDTH ||
-         y + h > HEIGHT) {
-         return;
-     }
- 
-     lcd_reg(0x0050, x);
-     lcd_reg(0x0051, x + w - 1);
-     lcd_reg(0x0052, y);
-     lcd_reg(0x0053, y + h - 1);
- 
-     lcd_reg(0x0020, x);
-     lcd_reg(0x0021, y);
- 
-     gpio_put(LCD_CS, 0);
-     gpio_put(LCD_RS, 0);
-     write16(0x0022);
-     gpio_put(LCD_RS, 1);
- 
-     for (int i = 0; i < w * h; i++) {
-         write16(color);
-     }
- 
-     gpio_put(LCD_CS, 1);
- }
- 
- // Clear the full screen
- void lcd_fill(uint16_t color) {
-     lcd_rect(0, 0, WIDTH, HEIGHT, color);
- }
- 
- // ================= COMPLETE ASCII FONT =================
- //
- // 95 characters: ASCII 32 through 126
- // Each glyph has 5 columns, 7 pixels tall.
- //
- // Supports A-Z, a-z, 0-9 and punctuation.
- 
- static const uint8_t font5x7[95][5] = {
- 
-     // Space through /
-     {0x00,0x00,0x00,0x00,0x00}, // Space
-     {0x00,0x00,0x5F,0x00,0x00}, // !
-     {0x00,0x07,0x00,0x07,0x00}, // "
-     {0x14,0x7F,0x14,0x7F,0x14}, // #
-     {0x24,0x2A,0x7F,0x2A,0x12}, // $
-     {0x23,0x13,0x08,0x64,0x62}, // %
-     {0x36,0x49,0x55,0x22,0x50}, // &
-     {0x00,0x05,0x03,0x00,0x00}, // '
-     {0x00,0x1C,0x22,0x41,0x00}, // (
-     {0x00,0x41,0x22,0x1C,0x00}, // )
-     {0x14,0x08,0x3E,0x08,0x14}, // *
-     {0x08,0x08,0x3E,0x08,0x08}, // +
-     {0x00,0x50,0x30,0x00,0x00}, // ,
-     {0x08,0x08,0x08,0x08,0x08}, // -
-     {0x00,0x60,0x60,0x00,0x00}, // .
-     {0x20,0x10,0x08,0x04,0x02}, // /
- 
-     // Numbers 0-9
-     {0x3E,0x51,0x49,0x45,0x3E}, // 0
-     {0x00,0x42,0x7F,0x40,0x00}, // 1
-     {0x42,0x61,0x51,0x49,0x46}, // 2
-     {0x21,0x41,0x45,0x4B,0x31}, // 3
-     {0x18,0x14,0x12,0x7F,0x10}, // 4
-     {0x27,0x45,0x45,0x45,0x39}, // 5
-     {0x3C,0x4A,0x49,0x49,0x30}, // 6
-     {0x01,0x71,0x09,0x05,0x03}, // 7
-     {0x36,0x49,0x49,0x49,0x36}, // 8
-     {0x06,0x49,0x49,0x29,0x1E}, // 9
- 
-     // : through @
-     {0x00,0x36,0x36,0x00,0x00}, // :
-     {0x00,0x56,0x36,0x00,0x00}, // ;
-     {0x08,0x14,0x22,0x41,0x00}, // <
-     {0x14,0x14,0x14,0x14,0x14}, // =
-     {0x00,0x41,0x22,0x14,0x08}, // >
-     {0x02,0x01,0x51,0x09,0x06}, // ?
-     {0x32,0x49,0x79,0x41,0x3E}, // @
- 
-     // Uppercase A-Z
-     {0x7E,0x11,0x11,0x11,0x7E}, // A
-     {0x7F,0x49,0x49,0x49,0x36}, // B
-     {0x3E,0x41,0x41,0x41,0x22}, // C
-     {0x7F,0x41,0x41,0x22,0x1C}, // D
-     {0x7F,0x49,0x49,0x49,0x41}, // E
-     {0x7F,0x09,0x09,0x09,0x01}, // F
-     {0x3E,0x41,0x49,0x49,0x7A}, // G
-     {0x7F,0x08,0x08,0x08,0x7F}, // H
-     {0x00,0x41,0x7F,0x41,0x00}, // I
-     {0x20,0x40,0x41,0x3F,0x01}, // J
-     {0x7F,0x08,0x14,0x22,0x41}, // K
-     {0x7F,0x40,0x40,0x40,0x40}, // L
-     {0x7F,0x02,0x0C,0x02,0x7F}, // M
-     {0x7F,0x04,0x08,0x10,0x7F}, // N
-     {0x3E,0x41,0x41,0x41,0x3E}, // O
-     {0x7F,0x09,0x09,0x09,0x06}, // P
-     {0x3E,0x41,0x51,0x21,0x5E}, // Q
-     {0x7F,0x09,0x19,0x29,0x46}, // R
-     {0x46,0x49,0x49,0x49,0x31}, // S
-     {0x01,0x01,0x7F,0x01,0x01}, // T
-     {0x3F,0x40,0x40,0x40,0x3F}, // U
-     {0x1F,0x20,0x40,0x20,0x1F}, // V
-     {0x3F,0x40,0x38,0x40,0x3F}, // W
-     {0x63,0x14,0x08,0x14,0x63}, // X
-     {0x07,0x08,0x70,0x08,0x07}, // Y
-     {0x61,0x51,0x49,0x45,0x43}, // Z
- 
-     // [ through `
-     {0x00,0x7F,0x41,0x41,0x00}, // [
-     {0x02,0x04,0x08,0x10,0x20}, // Backslash
-     {0x00,0x41,0x41,0x7F,0x00}, // ]
-     {0x04,0x02,0x01,0x02,0x04}, // ^
-     {0x40,0x40,0x40,0x40,0x40}, // _
-     {0x00,0x01,0x02,0x04,0x00}, // `
- 
-     // Lowercase a-z
-     {0x20,0x54,0x54,0x54,0x78}, // a
-     {0x7F,0x48,0x44,0x44,0x38}, // b
-     {0x38,0x44,0x44,0x44,0x20}, // c
-     {0x38,0x44,0x44,0x48,0x7F}, // d
-     {0x38,0x54,0x54,0x54,0x18}, // e
-     {0x08,0x7E,0x09,0x01,0x02}, // f
-     {0x0C,0x52,0x52,0x52,0x3E}, // g
-     {0x7F,0x08,0x04,0x04,0x78}, // h
-     {0x00,0x44,0x7D,0x40,0x00}, // i
-     {0x20,0x40,0x44,0x3D,0x00}, // j
-     {0x7F,0x10,0x28,0x44,0x00}, // k
-     {0x00,0x41,0x7F,0x40,0x00}, // l
-     {0x7C,0x04,0x18,0x04,0x78}, // m
-     {0x7C,0x08,0x04,0x04,0x78}, // n
-     {0x38,0x44,0x44,0x44,0x38}, // o
-     {0x7C,0x14,0x14,0x14,0x08}, // p
-     {0x08,0x14,0x14,0x18,0x7C}, // q
-     {0x7C,0x08,0x04,0x04,0x08}, // r
-     {0x48,0x54,0x54,0x54,0x20}, // s
-     {0x04,0x3F,0x44,0x40,0x20}, // t
-     {0x3C,0x40,0x40,0x20,0x7C}, // u
-     {0x1C,0x20,0x40,0x20,0x1C}, // v
-     {0x3C,0x40,0x30,0x40,0x3C}, // w
-     {0x44,0x28,0x10,0x28,0x44}, // x
-     {0x0C,0x50,0x50,0x50,0x3C}, // y
-     {0x44,0x64,0x54,0x4C,0x44}, // z
- 
-     // { through ~
-     {0x00,0x08,0x36,0x41,0x00}, // {
-     {0x00,0x00,0x7F,0x00,0x00}, // |
-     {0x00,0x41,0x36,0x08,0x00}, // }
-     {0x08,0x04,0x08,0x10,0x08}  // ~
- };
- 
- // ================= TEXT DRAWING =================
- 
- void draw_char(int x, int y, char c,
-                uint16_t color, int scale) {
- 
-     unsigned char ch = (unsigned char)c;
- 
-     if (ch < 32 || ch > 126) {
-         ch = '?';
-     }
- 
-     int index = ch - 32;
- 
-     for (int col = 0; col < 5; col++) {
-         uint8_t column = font5x7[index][col];
- 
-         for (int row = 0; row < 7; row++) {
-             if (column & (1u << row)) {
-                 lcd_rect(
-                     x + col * scale,
-                     y + row * scale,
-                     scale,
-                     scale,
-                     color
-                 );
-             }
-         }
-     }
- }
- 
- void draw_text(int x, int y,
-                const char *text,
-                uint16_t color, int scale) {
- 
-     int start_x = x;
- 
-     while (*text) {
- 
-         if (*text == '\n') {
-             x = start_x;
-             y += 9 * scale;
-         }
-         else {
-             draw_char(x, y, *text, color, scale);
-             x += 6 * scale;
-         }
- 
-         text++;
-     }
- }
- 
- // ================= MAIN =================
  
  int main(void) {
- 
      stdio_init_all();
-     sleep_ms(2000);
+     sleep_ms(500);
  
-     printf("QualityGate 2.1 Starting...\n");
- 
+     // Original SPFD5408 initialization and greeting: unchanged.
      lcd_gpio_init();
      lcd_init();
- 
-     // Black background
      lcd_fill(BLACK);
+     draw_text(6, 120, "fuck yeah,", RED, 2);
+     draw_text(48, 160, "lets goo", CYAN, 2);
+     show_status("STARTING", "INITIALIZING SERVOS", CYAN);
  
-     // Original message
-     draw_text(6, 120,
-               "fuck yeah,",
-               RED, 2);
+     // Uses the working individual header logic on GP16 and GP17.
+     // Both pins are channels of the same PWM slice (50 Hz).
+     servo1_attach();
+     servo2_attach();
+     servo1_write(TRAP_CLOSED);
+     servo2_write(CHUTE_HOME);
+     sleep_ms(1000);
  
-     draw_text(48, 160,
-               "lets goo",
-               CYAN, 2);
+     // First check each motor independently, one at a time.
+     test_trapdoor();
+     test_chute();
  
-     printf("Message displyed!\n");
- 
+     // Then repeat the full simulated sorting sequence.
+     // No AS7341 color classification occurs in this test firmware.
      while (true) {
-         sleep_ms(1000);
+         test_sort("RED", BIN_RED, RED);
+         sleep_ms(800);
+         test_sort("GREEN", BIN_GREEN, GREEN);
+         sleep_ms(800);
+         test_sort("BLUE", BIN_BLUE, BLUE);
+         sleep_ms(800);
+         test_sort("YELLOW", BIN_YELLOW, YELLOW);
+         sleep_ms(800);
      }
  }
  
